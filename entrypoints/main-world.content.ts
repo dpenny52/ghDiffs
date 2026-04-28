@@ -6,18 +6,60 @@
 // the isolated world. Running in MAIN gives us the page's real custom-element
 // registry, so the import succeeds.
 //
-// This script is purely a passive event consumer: it receives mount/unmount
-// events from the isolated content script and renders <PatchDiff /> /
-// <MultiFileDiff /> into the host element identified by
-// `data-ghdiffs-host-id`.
+// This script is a passive event consumer: it receives mount/unmount events
+// from the isolated content script and renders <PatchDiff /> / <MultiFileDiff />
+// into the host element identified by `data-ghdiffs-host-id`.
+//
+// For multi-file mounts that include comment metadata (owner/repo/PR/SHAs/
+// nonce), it also implements the post/delete callbacks by calling
+// `fetch()` *directly from MAIN world*. Doing the fetch here (rather than
+// hopping to the service worker) means the browser tags the request with
+// the page's origin/referer, which GitHub's `/page_data/` endpoints
+// require — a SW fetch sends `Origin: chrome-extension://...` and GitHub
+// rejects it with HTML 422.
 
 type Mounted = { unmount: () => void };
+
+type CommentSide = 'right' | 'left';
+
+type CommentsMeta = {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  baseOid: string;
+  headOid: string;
+  fetchNonce: string;
+};
+
+type ExistingComment = {
+  id: number;
+  body: string;
+  bodyHTML: string;
+  author: string | null;
+  avatarUrl: string | null;
+  canDelete: boolean;
+};
+
+type ExistingThread = {
+  side: CommentSide;
+  line: number;
+  isResolved: boolean;
+  comments: ExistingComment[];
+};
 
 type MountFilesDetail = {
   hostId: string;
   oldFile: { name: string; contents: string };
   newFile: { name: string; contents: string };
+  comments?: CommentsMeta;
+  existingThreads?: ExistingThread[];
 };
+
+type PostCommentResult =
+  | { ok: true; commentId: number }
+  | { ok: false; error: string };
+
+type DeleteCommentResult = { ok: true } | { ok: false; error: string };
 
 export default defineContentScript({
   matches: ['https://github.com/*/pull/*'],
@@ -27,6 +69,8 @@ export default defineContentScript({
     // Lazy-import so any module-level customElements code in @pierre/diffs
     // executes in the MAIN world (where customElements actually exists).
     const { mountPatchDiff, mountMultiFile } = await import('@/lib/render');
+    const { postReviewComment } = await import('@/lib/post-review-comment');
+    const { deleteReviewComment } = await import('@/lib/delete-review-comment');
 
     const roots = new Map<string, Mounted>();
 
@@ -54,7 +98,6 @@ export default defineContentScript({
       }
       const host = findHost(detail.hostId);
       if (!host) return;
-      // Idempotent: if a previous mount exists for this id, tear it down first.
       roots.get(detail.hostId)?.unmount();
       try {
         const m = mountPatchDiff(host, detail.patch);
@@ -83,8 +126,19 @@ export default defineContentScript({
       const host = findHost(detail.hostId);
       if (!host) return;
       roots.get(detail.hostId)?.unmount();
+
+      const callbacks = detail.comments
+        ? makeCommentCallbacks(detail.comments)
+        : undefined;
+
       try {
-        const m = mountMultiFile(host, detail.oldFile, detail.newFile);
+        const m = mountMultiFile(
+          host,
+          detail.oldFile,
+          detail.newFile,
+          callbacks,
+          detail.existingThreads,
+        );
         roots.set(detail.hostId, m);
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -95,6 +149,45 @@ export default defineContentScript({
         );
       }
     });
+
+    function makeCommentCallbacks(meta: CommentsMeta) {
+      return {
+        onPostComment: async (input: {
+          text: string;
+          line: number;
+          side: CommentSide;
+          path: string;
+        }): Promise<PostCommentResult> => {
+          const res = await postReviewComment({
+            owner: meta.owner,
+            repo: meta.repo,
+            prNumber: meta.prNumber,
+            baseOid: meta.baseOid,
+            headOid: meta.headOid,
+            fetchNonce: meta.fetchNonce,
+            path: input.path,
+            line: input.line,
+            side: input.side,
+            text: input.text,
+          });
+          return res.ok
+            ? { ok: true, commentId: res.commentId }
+            : { ok: false, error: res.error };
+        },
+        onDeleteComment: async (
+          commentId: number,
+        ): Promise<DeleteCommentResult> => {
+          const res = await deleteReviewComment({
+            owner: meta.owner,
+            repo: meta.repo,
+            prNumber: meta.prNumber,
+            fetchNonce: meta.fetchNonce,
+            commentId,
+          });
+          return res.ok ? { ok: true } : { ok: false, error: res.error };
+        },
+      };
+    }
 
     document.addEventListener(UNMOUNT_EVENT, (e) => {
       const ev = e as CustomEvent<{ hostId: string }>;

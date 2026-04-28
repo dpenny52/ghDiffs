@@ -1,3 +1,9 @@
+import { readFetchNonce } from '@/lib/csrf';
+import {
+  readExistingThreads,
+  type ExistingThread,
+  type ExistingThreadsByPath,
+} from '@/lib/existing-comments';
 import {
   findAllFileContainers,
   findFileListParent,
@@ -36,6 +42,9 @@ export default defineContentScript({
     // Base/head commit SHAs for the active PR (when available). When null, we
     // fall back to the patch-only path with no expand-context buttons.
     let comparisonOids: { baseOid: string; headOid: string } | null = null;
+    // Pre-existing review threads keyed by file path, parsed from the embedded
+    // pullRequestsChangesRoute JSON. Null until the payload is read on start.
+    let existingThreadsByPath: ExistingThreadsByPath | null = null;
     let activeKey: string | null = null;
     let hostIdCounter = 0;
 
@@ -180,11 +189,20 @@ export default defineContentScript({
       hostId: string,
       oldFile: { name: string; contents: string },
       newFile: { name: string; contents: string },
+      comments?: {
+        owner: string;
+        repo: string;
+        prNumber: number;
+        baseOid: string;
+        headOid: string;
+        fetchNonce: string;
+      },
+      existingThreads?: ExistingThread[],
     ) {
       void ensureMainReady().then(() => {
         document.dispatchEvent(
           new CustomEvent(MOUNT_FILES_EVENT, {
-            detail: { hostId, oldFile, newFile },
+            detail: { hostId, oldFile, newFile, comments, existingThreads },
           }),
         );
       });
@@ -284,7 +302,8 @@ export default defineContentScript({
       const parsed = parsePrUrl(location.href);
       const owner = parsed?.owner ?? '';
       const repo = parsed?.repo ?? '';
-      if (!owner || !repo) {
+      const prNumber = parsed?.prNumber ?? 0;
+      if (!owner || !repo || !prNumber) {
         dispatchMountPatch(hostId, splitFile.patch);
         return;
       }
@@ -314,10 +333,34 @@ export default defineContentScript({
 
         const oldName = isAdded ? splitFile.newPath : splitFile.oldPath;
         const newName = isDeleted ? splitFile.oldPath : splitFile.newPath;
+        // If we have a fetch nonce in the page, enable the comment UI by
+        // shipping post/delete metadata along with the mount event. Without
+        // a nonce GitHub's /page_data endpoints reject the request, so we
+        // skip wiring the comment UI rather than show buttons that fail.
+        const nonce = readFetchNonce();
+        const comments = nonce
+          ? {
+              owner,
+              repo,
+              prNumber,
+              baseOid,
+              headOid,
+              fetchNonce: nonce,
+            }
+          : undefined;
+        // Look up pre-existing review threads for this file. We index by the
+        // new path first (the path GitHub renders); for renames the threads
+        // live under the new path. Falling back to the old path covers
+        // delete-only diffs where the new path is /dev/null.
+        const existing =
+          existingThreadsByPath?.get(newName) ??
+          existingThreadsByPath?.get(oldName);
         dispatchMountFiles(
           hostId,
           { name: oldName, contents: baseContent },
           { name: newName, contents: headContent },
+          comments,
+          existing,
         );
       });
     }
@@ -420,6 +463,7 @@ export default defineContentScript({
           '[ghDiffs] could not read base/head SHAs — falling back to patch-only rendering (no expand-context buttons)',
         );
       }
+      existingThreadsByPath = readExistingThreads();
       attachObserver();
       processAllVisible();
     }
@@ -432,6 +476,7 @@ export default defineContentScript({
       }
       perFilePatches = null;
       comparisonOids = null;
+      existingThreadsByPath = null;
       activeKey = null;
     }
 
