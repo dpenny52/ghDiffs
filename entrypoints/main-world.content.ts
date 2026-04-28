@@ -17,6 +17,16 @@
 // the page's origin/referer, which GitHub's `/page_data/` endpoints
 // require — a SW fetch sends `Origin: chrome-extension://...` and GitHub
 // rejects it with HTML 422.
+//
+// We also patch `history.pushState`/`replaceState` from MAIN so the isolated
+// content script can detect SPA tab switches on the React PR view. Patches
+// in the isolated world don't intercept the page's own pushState calls, so
+// it has to happen here.
+
+import {
+  LOCATION_CHANGE_EVENT,
+  installPushStatePatch,
+} from '@/lib/spa-navigation';
 
 type Mounted = { unmount: () => void };
 
@@ -66,6 +76,11 @@ export default defineContentScript({
   world: 'MAIN',
   runAt: 'document_idle',
   async main() {
+    // Install the pushState/replaceState patch as early as possible so we
+    // catch the very first React Router navigation. This is synchronous and
+    // doesn't touch customElements, so it's safe before the heavy import.
+    installPushStatePatch(LOCATION_CHANGE_EVENT);
+
     // Lazy-import so any module-level customElements code in @pierre/diffs
     // executes in the MAIN world (where customElements actually exists).
     const { mountPatchDiff, mountMultiFile, mountToolbar } = await import(

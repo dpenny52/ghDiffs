@@ -17,6 +17,10 @@ import type {
   FetchRawFileResponse,
 } from '@/lib/messages';
 import { parsePrUrl } from '@/lib/pr-url';
+import {
+  LOCATION_CHANGE_EVENT,
+  subscribeToLocationChanges,
+} from '@/lib/spa-navigation';
 import { splitUnifiedDiff, type SplitFile } from '@/lib/split-patch';
 
 export default defineContentScript({
@@ -526,14 +530,14 @@ export default defineContentScript({
     // Boot.
     reconcileToCurrentUrl();
 
-    // Turbo soft-nav: re-evaluate URL on every navigation.
-    document.addEventListener('turbo:load', () => {
-      reconcileToCurrentUrl();
-    });
+    // Re-evaluate the URL whenever the page navigates. Covers React Router
+    // pushState (the new GitHub PR view's tab switches), back/forward via
+    // popstate, and legacy Turbo loads — see `lib/spa-navigation.ts`.
+    subscribeToLocationChanges(reconcileToCurrentUrl, LOCATION_CHANGE_EVENT);
 
     // Best-effort: tear down React roots before Turbo swaps the document.
-    // If the next page is also a /changes view, `turbo:load` will re-run
-    // start() right after.
+    // On the React PR view this never fires; on legacy pages it lets us
+    // clean up before the DOM is replaced.
     document.addEventListener('turbo:visit', () => {
       teardown();
     });
