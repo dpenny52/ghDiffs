@@ -56,7 +56,12 @@ export default defineContentScript({
     const POLL_EVENT = 'ghdiffs:isolated-poll';
     const MOUNT_EVENT = 'ghdiffs:mount';
     const MOUNT_FILES_EVENT = 'ghdiffs:mountFiles';
+    const MOUNT_TOOLBAR_EVENT = 'ghdiffs:mountToolbar';
     const UNMOUNT_EVENT = 'ghdiffs:unmount';
+
+    const TOOLBAR_HOST_ID = 'gh-toolbar';
+    const TOOLBAR_CLASS = 'ghdiffs-toolbar-host';
+    let toolbarHost: HTMLElement | null = null;
 
     const SHA_RE = /^[0-9a-f]{40}$/;
     const BINARY_DIFF_RE = /^Binary files .* differ$/m;
@@ -400,6 +405,32 @@ export default defineContentScript({
       observer = null;
     }
 
+    // ---- Toolbar (single global instance, sits above the file list) -------
+    function ensureToolbar() {
+      if (toolbarHost && toolbarHost.isConnected) return;
+      const parent = findFileListParent();
+      if (!parent) return;
+      const host = document.createElement('div');
+      host.className = TOOLBAR_CLASS;
+      host.setAttribute(HOST_ID_ATTR, TOOLBAR_HOST_ID);
+      parent.parentElement?.insertBefore(host, parent);
+      toolbarHost = host;
+      void ensureMainReady().then(() => {
+        document.dispatchEvent(
+          new CustomEvent(MOUNT_TOOLBAR_EVENT, {
+            detail: { hostId: TOOLBAR_HOST_ID },
+          }),
+        );
+      });
+    }
+
+    function teardownToolbar() {
+      if (!toolbarHost) return;
+      dispatchUnmount(TOOLBAR_HOST_ID);
+      toolbarHost.remove();
+      toolbarHost = null;
+    }
+
     async function fetchPatchOnce(
       owner: string,
       repo: string,
@@ -464,6 +495,7 @@ export default defineContentScript({
         );
       }
       existingThreadsByPath = readExistingThreads();
+      ensureToolbar();
       attachObserver();
       processAllVisible();
     }
@@ -474,6 +506,7 @@ export default defineContentScript({
       for (const container of Array.from(mounts.keys())) {
         unmountOne(container);
       }
+      teardownToolbar();
       perFilePatches = null;
       comparisonOids = null;
       existingThreadsByPath = null;

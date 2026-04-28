@@ -68,7 +68,9 @@ export default defineContentScript({
   async main() {
     // Lazy-import so any module-level customElements code in @pierre/diffs
     // executes in the MAIN world (where customElements actually exists).
-    const { mountPatchDiff, mountMultiFile } = await import('@/lib/render');
+    const { mountPatchDiff, mountMultiFile, mountToolbar } = await import(
+      '@/lib/render'
+    );
     const { postReviewComment } = await import('@/lib/post-review-comment');
     const { deleteReviewComment } = await import('@/lib/delete-review-comment');
 
@@ -78,6 +80,7 @@ export default defineContentScript({
     const POLL_EVENT = 'ghdiffs:isolated-poll';
     const MOUNT_EVENT = 'ghdiffs:mount';
     const MOUNT_FILES_EVENT = 'ghdiffs:mountFiles';
+    const MOUNT_TOOLBAR_EVENT = 'ghdiffs:mountToolbar';
     const UNMOUNT_EVENT = 'ghdiffs:unmount';
 
     function findHost(hostId: string): HTMLElement | null {
@@ -188,6 +191,26 @@ export default defineContentScript({
         },
       };
     }
+
+    document.addEventListener(MOUNT_TOOLBAR_EVENT, (e) => {
+      const ev = e as CustomEvent<{ hostId: string }>;
+      const detail = ev.detail;
+      if (!detail || typeof detail.hostId !== 'string') return;
+      const host = findHost(detail.hostId);
+      if (!host) return;
+      roots.get(detail.hostId)?.unmount();
+      try {
+        const m = mountToolbar(host);
+        roots.set(detail.hostId, m);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          '[ghDiffs:main] mountToolbar failed for hostId',
+          detail.hostId,
+          err,
+        );
+      }
+    });
 
     document.addEventListener(UNMOUNT_EVENT, (e) => {
       const ev = e as CustomEvent<{ hostId: string }>;

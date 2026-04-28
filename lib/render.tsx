@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   MultiFileDiff,
@@ -6,6 +6,12 @@ import {
   type DiffLineAnnotation,
   type FileContents,
 } from '@pierre/diffs/react';
+import {
+  getDiffStyle,
+  setDiffStyle,
+  subscribeDiffStyle,
+  type DiffStyle,
+} from './diff-style-store';
 import type { ReviewCommentSide } from './messages';
 
 export type Mounted = {
@@ -50,11 +56,14 @@ export type ExistingThread = {
   comments: ExistingComment[];
 };
 
-const SHARED_DIFF_OPTIONS = {
+const BASE_DIFF_OPTIONS = {
   theme: { dark: 'ayu-dark', light: 'ayu-light' },
-  diffStyle: 'unified',
   enableGutterUtility: true,
 } as const;
+
+function useReactiveDiffStyle(): DiffStyle {
+  return useSyncExternalStore(subscribeDiffStyle, getDiffStyle, getDiffStyle);
+}
 
 /**
  * Mount `<PatchDiff patch={patch} />` into `host`. The caller is responsible
@@ -65,8 +74,18 @@ const SHARED_DIFF_OPTIONS = {
  */
 export function mountPatchDiff(host: HTMLElement, patch: string): Mounted {
   const root: Root = createRoot(host);
-  root.render(<PatchDiff patch={patch} options={SHARED_DIFF_OPTIONS} />);
+  root.render(<ReactivePatchDiff patch={patch} />);
   return makeUnmounter(root);
+}
+
+function ReactivePatchDiff({ patch }: { patch: string }) {
+  const diffStyle = useReactiveDiffStyle();
+  return (
+    <PatchDiff
+      patch={patch}
+      options={{ ...BASE_DIFF_OPTIONS, diffStyle }}
+    />
+  );
 }
 
 /**
@@ -119,14 +138,27 @@ export function mountMultiFile(
     );
   } else {
     root.render(
-      <MultiFileDiff
-        oldFile={oldFile}
-        newFile={newFile}
-        options={SHARED_DIFF_OPTIONS}
-      />,
+      <ReactiveMultiFileDiff oldFile={oldFile} newFile={newFile} />,
     );
   }
   return makeUnmounter(root);
+}
+
+function ReactiveMultiFileDiff({
+  oldFile,
+  newFile,
+}: {
+  oldFile: FileContents;
+  newFile: FileContents;
+}) {
+  const diffStyle = useReactiveDiffStyle();
+  return (
+    <MultiFileDiff
+      oldFile={oldFile}
+      newFile={newFile}
+      options={{ ...BASE_DIFF_OPTIONS, diffStyle }}
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +277,100 @@ const MARKDOWN_CSS = `
 .ghdiffs-markdown-body details summary { padding: 4px 0; }
 .ghdiffs-markdown-body details summary { cursor: pointer; font-weight: 600; }
 `;
+
+/**
+ * Mount the diff-style toggle toolbar (unified vs. split). Sits above the
+ * file list; one instance per page. Switching the toggle updates the
+ * shared `diff-style-store`, which every mounted diff subscribes to.
+ */
+export function mountToolbar(host: HTMLElement): Mounted {
+  const root: Root = createRoot(host);
+  root.render(<DiffStyleToolbar />);
+  return makeUnmounter(root);
+}
+
+function DiffStyleToolbar() {
+  const diffStyle = useReactiveDiffStyle();
+  return (
+    <div className="ghdiffs-toolbar" style={toolbarStyle}>
+      <span style={toolbarLabelStyle}>Diff layout</span>
+      <div role="group" style={toolbarGroupStyle}>
+        <ToolbarButton
+          active={diffStyle === 'unified'}
+          onClick={() => setDiffStyle('unified')}
+          label="Unified"
+        />
+        <ToolbarButton
+          active={diffStyle === 'split'}
+          onClick={() => setDiffStyle('split')}
+          label="Split"
+        />
+      </div>
+    </div>
+  );
+}
+
+function ToolbarButton({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      style={active ? toolbarBtnActiveStyle : toolbarBtnStyle}
+    >
+      {label}
+    </button>
+  );
+}
+
+const toolbarStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 12,
+  padding: '8px 12px',
+  marginBottom: 8,
+  border: '1px solid var(--borderColor-default, #d0d7de)',
+  borderRadius: 6,
+  background: 'var(--bgColor-muted, #f6f8fa)',
+};
+
+const toolbarLabelStyle: React.CSSProperties = {
+  fontSize: 13,
+  fontWeight: 600,
+  color: 'var(--fgColor-muted, #59636e)',
+};
+
+const toolbarGroupStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  border: '1px solid var(--borderColor-default, #d0d7de)',
+  borderRadius: 6,
+  overflow: 'hidden',
+  background: 'var(--bgColor-default, #fff)',
+};
+
+const toolbarBtnStyle: React.CSSProperties = {
+  padding: '4px 12px',
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--fgColor-default, #1f2328)',
+  fontSize: 13,
+  cursor: 'pointer',
+};
+
+const toolbarBtnActiveStyle: React.CSSProperties = {
+  ...toolbarBtnStyle,
+  background: 'var(--bgColor-accent-emphasis, #0969da)',
+  color: '#ffffff',
+  fontWeight: 600,
+};
 
 function makeUnmounter(root: Root): Mounted {
   let unmounted = false;
@@ -620,11 +746,13 @@ function MultiFileDiffWithComments({
     ],
   );
 
+  const diffStyle = useReactiveDiffStyle();
+
   return (
     <MultiFileDiff<AnnotationMeta>
       oldFile={oldFile}
       newFile={newFile}
-      options={SHARED_DIFF_OPTIONS}
+      options={{ ...BASE_DIFF_OPTIONS, diffStyle }}
       lineAnnotations={lineAnnotations}
       renderAnnotation={renderAnnotation}
       renderGutterUtility={renderGutterUtility}
