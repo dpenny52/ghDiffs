@@ -12,6 +12,12 @@ import {
   subscribeDiffStyle,
   type DiffStyle,
 } from './diff-style-store';
+import {
+  getDiffOverflow,
+  setDiffOverflow,
+  subscribeDiffOverflow,
+  type DiffOverflow,
+} from './diff-overflow-store';
 import type { ReviewCommentSide } from './messages';
 
 export type Mounted = {
@@ -65,6 +71,14 @@ function useReactiveDiffStyle(): DiffStyle {
   return useSyncExternalStore(subscribeDiffStyle, getDiffStyle, getDiffStyle);
 }
 
+function useReactiveDiffOverflow(): DiffOverflow {
+  return useSyncExternalStore(
+    subscribeDiffOverflow,
+    getDiffOverflow,
+    getDiffOverflow,
+  );
+}
+
 /**
  * Mount `<PatchDiff patch={patch} />` into `host`. The caller is responsible
  * for inserting `host` into the DOM at the right place. The theme follows
@@ -80,10 +94,11 @@ export function mountPatchDiff(host: HTMLElement, patch: string): Mounted {
 
 function ReactivePatchDiff({ patch }: { patch: string }) {
   const diffStyle = useReactiveDiffStyle();
+  const overflow = useReactiveDiffOverflow();
   return (
     <PatchDiff
       patch={patch}
-      options={{ ...BASE_DIFF_OPTIONS, diffStyle }}
+      options={{ ...BASE_DIFF_OPTIONS, diffStyle, overflow }}
     />
   );
 }
@@ -152,11 +167,12 @@ function ReactiveMultiFileDiff({
   newFile: FileContents;
 }) {
   const diffStyle = useReactiveDiffStyle();
+  const overflow = useReactiveDiffOverflow();
   return (
     <MultiFileDiff
       oldFile={oldFile}
       newFile={newFile}
-      options={{ ...BASE_DIFF_OPTIONS, diffStyle }}
+      options={{ ...BASE_DIFF_OPTIONS, diffStyle, overflow }}
     />
   );
 }
@@ -291,6 +307,7 @@ export function mountToolbar(host: HTMLElement): Mounted {
 
 function DiffStyleToolbar() {
   const diffStyle = useReactiveDiffStyle();
+  const overflow = useReactiveDiffOverflow();
   return (
     <div className="ghdiffs-toolbar" style={toolbarStyle}>
       <span style={toolbarLabelStyle}>Diff layout</span>
@@ -304,6 +321,19 @@ function DiffStyleToolbar() {
           active={diffStyle === 'split'}
           onClick={() => setDiffStyle('split')}
           label="Split"
+        />
+      </div>
+      <span style={toolbarLabelStyle}>Long lines</span>
+      <div role="group" style={toolbarGroupStyle}>
+        <ToolbarButton
+          active={overflow === 'scroll'}
+          onClick={() => setDiffOverflow('scroll')}
+          label="Scroll"
+        />
+        <ToolbarButton
+          active={overflow === 'wrap'}
+          onClick={() => setDiffOverflow('wrap')}
+          label="Wrap"
         />
       </div>
     </div>
@@ -747,12 +777,13 @@ function MultiFileDiffWithComments({
   );
 
   const diffStyle = useReactiveDiffStyle();
+  const overflow = useReactiveDiffOverflow();
 
   return (
     <MultiFileDiff<AnnotationMeta>
       oldFile={oldFile}
       newFile={newFile}
-      options={{ ...BASE_DIFF_OPTIONS, diffStyle }}
+      options={{ ...BASE_DIFF_OPTIONS, diffStyle, overflow }}
       lineAnnotations={lineAnnotations}
       renderAnnotation={renderAnnotation}
       renderGutterUtility={renderGutterUtility}
